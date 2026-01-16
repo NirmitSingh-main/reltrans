@@ -24,6 +24,11 @@ on:
       'wrappers.f90'
     ]
 
+concurrency:
+  # cancels when a PR gets updated
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}-${{ github.actor }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
