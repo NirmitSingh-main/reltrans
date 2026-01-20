@@ -1,7 +1,10 @@
+import os
 import inspect
 import pathlib
 import logging
 import dataclasses
+
+from typing import Any
 
 import pytest
 import wrapper
@@ -29,6 +32,56 @@ def _create_snapshot(name: str, data: np.array):
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     path = SNAPSHOT_DIR / name
     np.save(str(path.absolute()), data)
+
+
+class EnvironmentVariables:
+    def __init__(self):
+        self.original_vars = {}
+
+    def __setitem__(self, name: str, value: str):
+        """Set an environment variable."""
+        if name not in self.original_vars:
+            self.original_vars[name] = os.environ.get(name, None)
+        os.environ[name] = value
+
+    def __getitem__(self, name: str) -> Any:
+        """Get an environment variable."""
+        return os.environ[name]
+
+    def get(self, name: str, default=None) -> Any:
+        """Get an environment variable with `default = None`."""
+        return os.environ.get(name, default)
+
+    def _restore(self):
+        """Restore the original environment variables."""
+        for name, v in self.original_vars.items():
+            if v is None:
+                del os.environ[name]
+            else:
+                os.environ[name] = v
+
+
+@pytest.fixture(scope="function")
+def envars() -> EnvironmentVariables:
+    """
+    Used to set environment variables that are only valid for the duration
+    of a particular test.
+
+    These may be used as a greatly simplified version of `os.environ`:
+
+        def test_mytest(envars):
+            envars["SOMETHING"] = "VALUE"
+            assert envars["SOMETHING"] == "VALUE"
+            assert envars.get("DIFFERENT", "5") == "5"
+
+    All environment variables are unset or restored to their original values
+    from before the test ran.
+
+    Note this is not thread safe.
+    """
+    ev = EnvironmentVariables()
+    yield ev
+    ev._restore()
 
 
 @pytest.fixture(scope="session")
