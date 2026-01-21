@@ -100,3 +100,7 @@ xspec: $(RELTRANS_SHARED_LIBRARY) xspec/lmodel_reltrans.dat xspec/compile_reltra
 	# Compile and pray XSPEC is happy
 	cd $(BUILD)/xspec && xspec - compile_reltrans.xcm
 
+.PHONY: tables
+tables:
+	# Normalise the tables
+	python3 ./renormalise_table.py
