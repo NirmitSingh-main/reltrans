@@ -56,7 +56,7 @@ endif
 endif
 
 # the path to the reltrans library for the -L linker flag
-LIB_PATH := $(shell realpath $(BUILD))/lib
+LIB_PATH := $(abspath $(BUILD)/lib)
 RELTRANS_SHARED_LIBRARY := $(BUILD)/lib/libreltrans.$(SHARED_EXT)
 
 all: $(BUILD) $(RELTRANS_SHARED_LIBRARY)
