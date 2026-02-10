@@ -1,206 +1,255 @@
-include 'subroutines/common.f90'
-
-! Calculate the frequency limits and number of frequency bins, depending on
-! ReIm.
-subroutine config_frequency(config, model_args)
-    use m_genreltrans
+module m_genreltrans
+    use common_types
     implicit none
-    type(t_config), intent(inout) :: config
-    type(t_model_arguments), intent(inout) :: model_args
 
-    logical :: fhizero, flozero
+contains
 
-    ! TODO: magic constants
+    ! Allocate the global arrays that reltrans needs
+    subroutine setup_global_arrays(config, nlp)
+        use dyn_gr, only: ndelta, cosd, dcosdr, rlp, tlp, npts, re1, pem1, taudo1
+        use gr_continuum, only: tauso, gso, cosdelta_obs
+        use radial_grids, only: logxir, gsdr, dfer_arr, logner
+        integer, intent(in) :: nlp
+        type(t_config), intent(in) :: config
+        ! allocate arrays for radial profiles
+        allocate(dfer_arr(config%xe))
+        allocate(logxir(config%xe))
+        allocate(gsdr(config%xe))
+        allocate(logner(config%xe))
 
-    ! TODO: this is a breaking change compared to the comparison to see if
-    ! fhiHz etc are greater than tiny(...)
+        ! allocate GR arrays
+        allocate (cosd(ndelta,nlp))
+        allocate (dcosdr(ndelta,nlp))
+        allocate (rlp(ndelta,nlp))
+        allocate (tlp(ndelta,nlp))
+        allocate (npts(nlp))
+        allocate (gso(nlp))
+        allocate (tauso(nlp))
+        allocate (cosdelta_obs(nlp))
 
-    ! rework this logic so that low frequencies always result in time
-    ! independent spectrum, not just for reim<7
-    if (model_args%ReIm .eq. 7) then
-        if(model_args%Mass .gt. 1000) then
-            model_args%floHz = 1.e-5
-            model_args%fhiHz = 5.e-2
-        else
-            model_args%floHz = 0.07
-            model_args%fhiHz = 700.0
-        end if
-        ! TODO: why 0.01 here, but 0.09 in the other branch?
-        ! overwrite the frequency spacing
-        config%dlogf = 0.01
-    endif
-    ! else:
-    ! if doing lag-energy spectra, just work out how many frequencies to
-    ! average over
+        allocate(re1(config%nphi,config%nro))
+        allocate(taudo1(config%nphi,config%nro))
+        allocate(pem1(config%nphi,config%nro))
+    end subroutine setup_global_arrays
 
-    ! Convert frequency bounds from Hz to c/Rg (now being more accurate with
-    ! constants)
-    config%fhi = dble(model_args%fhiHz) * 4.92695275718945d-06 * model_args%Mass
-    config%flo = dble(model_args%floHz) * 4.92695275718945d-06 * model_args%Mass
-    config%nf = ceiling(log10(model_args%fhiHz/model_args%floHz) / config%dlogf)
-    config%fc = 0.5d0 * (model_args%floHz + model_args%fhiHz)
+    subroutine print_header()
+        write(*,*)"----------------------------------------------------"
+        write(*,*)"This is RELTRANS v1.0.0: a transfer function model for"
+        write(*,*)"X-ray reverberation mapping."
+        write(*,*)"Please cite Ingram et al (2019) MNRAS 488 p324-347, "
+        write(*,*)"Mastroserio et al (2021) MNRAS 507 p55-73, and "
+        write(*,*)"Lucchini et al (2023) arXiv 230505039L."
+        write(*,*)"----------------------------------------------------"
+    end subroutine print_header
 
-    ! Check how we did and adjust if necessary
-    fhizero = model_args%fhiHz .lt. tiny(model_args%fhiHz)
-    flozero = model_args%floHz .lt. tiny(model_args%floHz)
-    if (fhizero .or. flozero) then
-        model_args%fhiHz = 0.d0
-        model_args%floHz = 0.d0
-        config%nf = 1
-    end if
-end subroutine config_frequency
+    ! Calculate the frequency limits and number of frequency bins, depending on
+    ! ReIm.
+    subroutine config_frequency(config, model_args)
+        type(t_config), intent(inout) :: config
+        type(t_model_arguments), intent(inout) :: model_args
 
-subroutine do_convolutions(config, model_args, arrays)
-    use m_genreltrans_types, only: t_config, t_model_arguments, t_arrays
-    use conv_mod, only: nex, conv_one_FFTw
-    use gr_continuum, only: gso, lens
-    use radial_grids, only: logner, gsdr, logxir
-    implicit none
-    type(t_config), intent(in) :: config
-    type(t_model_arguments), intent(in) :: model_args
-    type(t_arrays), intent(inout) :: arrays
+        logical :: fhizero, flozero
 
-    double precision, parameter :: pi = acos(-1.d0)
-    real, parameter :: dyn = 0.0 !1e-7
-    logical :: test
-    real :: Gamma0, Gamma1, Gamma2, Cutoff_0, E, mue, thetae
-    real :: Hx_delta(nex),Hx_dlogxi(nex)
-    real :: dlogxi1, dlogxi2, logne, logxi0, logxi1, logxi2
-    integer :: i, j, m, ionvariation, mubin, rbin
-    real :: photarx(nex), photarx_1(nex), photarx_2(nex)
-    real :: reline_w0(model_args%nlp, nex), imline_w0(model_args%nlp, nex)
-    real :: reline_w1(model_args%nlp, nex), imline_w1(model_args%nlp, nex)
-    real :: reline_w2(model_args%nlp, nex), imline_w2(model_args%nlp, nex)
-    real :: reline_w3(model_args%nlp,nex), imline_w3(model_args%nlp,nex)
-    real :: photarx_dlogxi(nex)
-    real :: Hx(nex), photarx_delta(nex)
+        ! TODO: magic constants
 
-    ! needtrans = .false.
-    ! Initialize arrays for transfer functions
-    arrays%ReW0 = 0.0
-    arrays%ImW0 = 0.0
-    arrays%ReW1 = 0.0
-    arrays%ImW1 = 0.0
-    arrays%ReW2 = 0.0
-    arrays%ImW2 = 0.0
-    arrays%ReW3 = 0.0
-    arrays%ImW3 = 0.0
-    Gamma1 = real(model_args%Gamma) - 0.5*config%DeltaGamma
-    Gamma2 = real(model_args%Gamma) + 0.5*config%DeltaGamma
-    ! Get logxi values corresponding to Gamma1 and Gamma2
-    call xilimits(nex, arrays%earx, model_args%nlp, arrays%contx,              &
-        config%DeltaGamma,real(gso),real(lens), real(model_args%zcos),         &
-        dlogxi1,dlogxi2)
-    ! Set the ion-variation to 1, there is an if inside the radial loop to
-    ! check if either the ionvar is 0 or the logxi is 0 to
-    ! set ionvariation to 0  it is important that ionvariation is different
-    ! than ionvar because ionvar  is used also later in
-    ! the rawS subroutine to calculate the cross-spectrum
-    ionvariation = 1
-    ! Loop over radius, emission angle and frequency
-    do rbin = 1, config%xe !Loop over radial zones
-        ! Set parameters with radial dependence
-        Gamma0 = real(model_args%Gamma)
-        logne = logner(rbin)
-        Cutoff_0 = real(gsdr(rbin)) * model_args%Cutoff_s
-        logxi0 = real(logxir(rbin))
-        if(config%xe .eq. 1)then
-            Cutoff_0 = model_args%Cutoff_s
-            logne = model_args%lognep
-            logxi0 = model_args%logxi
-        end if
-        ! Avoid negative values of the ionisation parameter
-        if (logxi0 .eq. 0.0 .or. config%ionvar .eq. 0) then
-            ionvariation = 0.0
-        end if
-        do mubin = 1, config%me !loop over emission angle zones
-            ! Calculate input emission angle
-            mue = (real(mubin) - 0.5) / real(config%me)
-            thetae = acos(mue) * 180.0 / real(pi)
-            if(config%me .eq. 1) thetae = real(model_args%inc)
-            ! Call restframe reflection model
-            call rest_frame(arrays%earx, nex, Gamma0, model_args%Afe,logne,    &
-                Cutoff_0, logxi0, thetae, model_args%Cp, photarx)
-            ! NON LINEAR EFFECTS
-            if (config%DC .eq. 0) then
-               ! Gamma variations
-               logxi1 = logxi0 + ionvariation * dlogxi1
-               call rest_frame(arrays%earx, nex, Gamma1,model_args%Afe,        &
-                   logne, Cutoff_0, logxi1, thetae,model_args%Cp,photarx_1)
-               logxi2 = logxi0 + ionvariation * dlogxi2
-               call rest_frame(arrays%earx, nex, Gamma2,model_args%Afe,        &
-                   logne, Cutoff_0, logxi2, thetae,model_args%Cp,photarx_2)
-               photarx_delta = (photarx_2 - photarx_1)/(Gamma2-Gamma1)
-               ! xi variations
-               call rest_frame(arrays%earx, nex, Gamma0,model_args%Afe,        &
-                   logne, Cutoff_0, logxi1, thetae,model_args%Cp,photarx_1)
-               call rest_frame(arrays%earx, nex, Gamma0,model_args%Afe,        &
-                   logne, Cutoff_0, logxi2, thetae,model_args%Cp,photarx_2)
-               photarx_dlogxi = 0.434294481 * (photarx_2 - photarx_1) / (dlogxi2-dlogxi1) !pre-factor is 1/ln10
+        ! TODO: this is a breaking change compared to the comparison to see if
+        ! fhiHz etc are greater than tiny(...)
+
+        ! rework this logic so that low frequencies always result in time
+        ! independent spectrum, not just for reim<7
+        if (model_args%ReIm .eq. 7) then
+            if (model_args%Mass .gt. 1000) then
+                model_args%floHz = 1.e-5
+                model_args%fhiHz = 5.e-2
+            else
+                model_args%floHz = 0.07
+                model_args%fhiHz = 700.0
             end if
-            ! Multiply by E^{Gamma-1} to make less steep
-            do i = 1,nex
-               E = 0.5 * (arrays%earx(i) + arrays%earx(i-1))
-               Hx(i) = photarx(i) * E**(Gamma0-1)
-               Hx_delta(i) = photarx_delta(i) * E**(Gamma0-1)
-               Hx_dlogxi(i) = photarx_dlogxi(i) * E**(Gamma0-1)
-            end do
-            ! Loop through frequencies and lamp posts
-            do j = 1,config%nf
-               do i = 1,nex
-                  do m=1,model_args%nlp
-                     reline_w0(m, i) = real(arrays%ker_W0(m, i, j,mubin, rbin))
-                     imline_w0(m, i) = aimag(arrays%ker_W0(m, i, j,mubin, rbin))
-                     reline_w1(m, i) = real(arrays%ker_W1(m, i, j,mubin, rbin))
-                     imline_w1(m, i) = aimag(arrays%ker_W1(m, i, j,mubin, rbin))
-                     reline_w2(m, i) = real(arrays%ker_W2(m, i, j,mubin, rbin))
-                     imline_w2(m, i) = aimag(arrays%ker_W2(m, i, j,mubin, rbin))
-                     reline_w3(m, i) = real(arrays%ker_W3(m, i, j,mubin, rbin))
-                     imline_w3(m, i) = aimag(arrays%ker_W3(m, i, j,mubin, rbin))
-                  end do
-               end do
-               ! TODO: this test wrapping should be inside the conv functions,
-               ! not at their callsites
-               ! Do the convolution (involves multiplying by E^{1-Gamma})
-               if (test) then
-                  call conv_one_FFT(dyn, arrays%earx, Gamma0, Hx,reline_w0,    &
-                      imline_w0, arrays%ReW0(:, :, j),arrays%ImW0(:, :, j),    &
-                      config%DC, model_args%nlp)
-                  if(config%DC .eq. 0 .and. config%refvar .eq. 1) then
-                     call conv_one_FFT(dyn, arrays%earx, Gamma0, Hx,           &
-                         reline_w1, imline_w1, arrays%ReW1(:, :, j),           &
-                         arrays%ImW1(:, :, j), config%DC, model_args%nlp)
-                     call conv_one_FFT(dyn, arrays%earx, Gamma0,Hx_delta,      &
-                         reline_w2, imline_w2,arrays%ReW2(:,:,j),              &
-                         arrays%ImW2(:, :, j),config%DC, model_args%nlp)
-                  end if
-                  if(config%DC .eq. 0 .and. config%ionvar .eq. 1) then
-                     call conv_one_FFT(dyn, arrays%earx, Gamma0,Hx_dlogxi,     &
-                         reline_w3, imline_w3,arrays%ReW3(:,:, j),             &
-                         arrays%ImW3(:, :, j),config%DC, model_args%nlp)
-                  end if
-               else
-                  call conv_one_FFTw(dyn, arrays%earx, Gamma0, Hx,reline_w0,   &
-                      imline_w0, arrays%ReW0(:, :, j),arrays%ImW0(:, :, j),    &
-                      config%DC, model_args%nlp)
-                  if(config%DC .eq. 0 .and. config%refvar .eq. 1) then
-                     call conv_one_FFTw(dyn, arrays%earx, Gamma0, Hx,          &
-                         reline_w1, imline_w1, arrays%ReW1(:, :, j),           &
-                         arrays%ImW1(:, :, j), config%DC, model_args%nlp)
-                     call conv_one_FFTw(dyn, arrays%earx, Gamma0,Hx_delta,     &
-                         reline_w2, imline_w2,arrays%ReW2(:,:,j),              &
-                         arrays%ImW2(:, :, j),config%DC, model_args%nlp)
-                  end if
-                  if(config%DC .eq. 0 .and. config%ionvar .eq. 1) then
-                     call conv_one_FFTw(dyn, arrays%earx, Gamma0,Hx_dlogxi,    &
-                         reline_w3, imline_w3,arrays%ReW3(:,:, j),             &
-                         arrays%ImW3(:, :, j),config%DC, model_args%nlp)
-                  end if
-               endif
+            ! TODO: why 0.01 here, but 0.09 in the other branch?
+            ! overwrite the frequency spacing
+            config%dlogf = 0.01
+        endif
+        ! else:
+        ! if doing lag-energy spectra, just work out how many frequencies to
+        ! average over
+
+        ! Convert frequency bounds from Hz to c/Rg (now being more accurate with
+        ! constants)
+        config%fhi = dble(model_args%fhiHz) * 4.92695275718945d-06 * model_args%Mass
+        config%flo = dble(model_args%floHz) * 4.92695275718945d-06 * model_args%Mass
+        config%nf = ceiling(log10(model_args%fhiHz/model_args%floHz) / config%dlogf)
+        config%fc = 0.5d0 * (model_args%floHz + model_args%fhiHz)
+
+        ! Check how we did and adjust if necessary
+        fhizero = model_args%fhiHz .lt. tiny(model_args%fhiHz)
+        flozero = model_args%floHz .lt. tiny(model_args%floHz)
+        if (fhizero .or. flozero) then
+            model_args%fhiHz = 0.d0
+            model_args%floHz = 0.d0
+            config%nf = 1
+        end if
+    end subroutine config_frequency
+
+    subroutine do_convolutions(config, model_args, arrays)
+        use conv_mod, only: nex, conv_one_FFTw
+        use gr_continuum, only: gso, lens
+        use radial_grids, only: logner, gsdr, logxir
+        type(t_config), intent(in) :: config
+        type(t_model_arguments), intent(in) :: model_args
+        type(t_arrays), intent(inout) :: arrays
+
+        double precision, parameter :: pi = acos(-1.d0)
+        real, parameter :: dyn = 0.0 !1e-7
+        logical :: test
+        real :: Gamma0, Gamma1, Gamma2, Cutoff_0, E, mue, thetae
+        real :: Hx_delta(nex),Hx_dlogxi(nex)
+        real :: dlogxi1, dlogxi2, logne, logxi0, logxi1, logxi2
+        integer :: i, j, m, ionvariation, mubin, rbin
+        real :: photarx(nex), photarx_1(nex), photarx_2(nex)
+        real :: reline_w0(model_args%nlp, nex), imline_w0(model_args%nlp, nex)
+        real :: reline_w1(model_args%nlp, nex), imline_w1(model_args%nlp, nex)
+        real :: reline_w2(model_args%nlp, nex), imline_w2(model_args%nlp, nex)
+        real :: reline_w3(model_args%nlp,nex), imline_w3(model_args%nlp,nex)
+        real :: photarx_dlogxi(nex)
+        real :: Hx(nex), photarx_delta(nex)
+
+        ! needtrans = .false.
+        ! Initialize arrays for transfer functions
+        arrays%ReW0 = 0.0
+        arrays%ImW0 = 0.0
+        arrays%ReW1 = 0.0
+        arrays%ImW1 = 0.0
+        arrays%ReW2 = 0.0
+        arrays%ImW2 = 0.0
+        arrays%ReW3 = 0.0
+        arrays%ImW3 = 0.0
+        Gamma1 = real(model_args%Gamma) - 0.5*config%DeltaGamma
+        Gamma2 = real(model_args%Gamma) + 0.5*config%DeltaGamma
+        ! Get logxi values corresponding to Gamma1 and Gamma2
+        call xilimits(nex, arrays%earx, model_args%nlp, arrays%contx,          &
+            config%DeltaGamma,real(gso),real(lens), real(model_args%zcos),     &
+            dlogxi1,dlogxi2)
+        ! Set the ion-variation to 1, there is an if inside the radial loop to
+        ! check if either the ionvar is 0 or the logxi is 0 to
+        ! set ionvariation to 0  it is important that ionvariation is different
+        ! than ionvar because ionvar  is used also later in
+        ! the rawS subroutine to calculate the cross-spectrum
+        ionvariation = 1
+        ! Loop over radius, emission angle and frequency
+        do rbin = 1, config%xe !Loop over radial zones
+            ! Set parameters with radial dependence
+            Gamma0 = real(model_args%Gamma)
+            logne = logner(rbin)
+            Cutoff_0 = real(gsdr(rbin)) * model_args%Cutoff_s
+            logxi0 = real(logxir(rbin))
+            if (config%xe .eq. 1)then
+                Cutoff_0 = model_args%Cutoff_s
+                logne = model_args%lognep
+                logxi0 = model_args%logxi
+            end if
+            ! Avoid negative values of the ionisation parameter
+            if (logxi0 .eq. 0.0 .or. config%ionvar .eq. 0) then
+                ionvariation = 0.0
+            end if
+            do mubin = 1, config%me !loop over emission angle zones
+                ! Calculate input emission angle
+                mue = (real(mubin) - 0.5) / real(config%me)
+                thetae = acos(mue) * 180.0 / real(pi)
+                if (config%me .eq. 1) thetae = real(model_args%inc)
+                ! Call restframe reflection model
+                call rest_frame(arrays%earx, nex, Gamma0, model_args%Afe,      &
+                    logne,Cutoff_0, logxi0, thetae, model_args%Cp, photarx)
+                ! NON LINEAR EFFECTS
+                if (config%DC .eq. 0) then
+                   ! Gamma variations
+                   logxi1 = logxi0 + ionvariation * dlogxi1
+                   call rest_frame(arrays%earx, nex, Gamma1,model_args%Afe,    &
+                       logne, Cutoff_0, logxi1, thetae,model_args%Cp,          &
+                       photarx_1)
+                   logxi2 = logxi0 + ionvariation * dlogxi2
+                   call rest_frame(arrays%earx, nex, Gamma2,model_args%Afe,    &
+                       logne, Cutoff_0, logxi2, thetae,model_args%Cp,          &
+                       photarx_2)
+                   photarx_delta = (photarx_2 - photarx_1)/(Gamma2-Gamma1)
+                   ! xi variations
+                   call rest_frame(arrays%earx, nex, Gamma0,model_args%Afe,    &
+                       logne, Cutoff_0, logxi1, thetae,model_args%Cp,          &
+                       photarx_1)
+                   call rest_frame(arrays%earx, nex, Gamma0,model_args%Afe,    &
+                       logne, Cutoff_0, logxi2, thetae,model_args%Cp,          &
+                       photarx_2)
+                   photarx_dlogxi = 0.434294481 * (photarx_2 - photarx_1) / (dlogxi2-dlogxi1) !pre-factor is 1/ln10
+                end if
+                ! Multiply by E^{Gamma-1} to make less steep
+                do i = 1,nex
+                   E = 0.5 * (arrays%earx(i) + arrays%earx(i-1))
+                   Hx(i) = photarx(i) * E**(Gamma0-1)
+                   Hx_delta(i) = photarx_delta(i) * E**(Gamma0-1)
+                   Hx_dlogxi(i) = photarx_dlogxi(i) * E**(Gamma0-1)
+                end do
+                ! Loop through frequencies and lamp posts
+                do j = 1,config%nf
+                   do i = 1,nex
+                      do m=1,model_args%nlp
+                         reline_w0(m, i) = real(arrays%ker_W0(m, i, j,mubin, rbin))
+                         imline_w0(m, i) = aimag(arrays%ker_W0(m, i, j,mubin, rbin))
+                         reline_w1(m, i) = real(arrays%ker_W1(m, i, j,mubin, rbin))
+                         imline_w1(m, i) = aimag(arrays%ker_W1(m, i, j,mubin, rbin))
+                         reline_w2(m, i) = real(arrays%ker_W2(m, i, j,mubin, rbin))
+                         imline_w2(m, i) = aimag(arrays%ker_W2(m, i, j,mubin, rbin))
+                         reline_w3(m, i) = real(arrays%ker_W3(m, i, j,mubin, rbin))
+                         imline_w3(m, i) = aimag(arrays%ker_W3(m, i, j,mubin, rbin))
+                      end do
+                   end do
+                   ! TODO: this test wrapping should be inside the conv functions,
+                   ! not at their callsites
+                   ! Do the convolution (involves multiplying by E^{1-Gamma})
+                   if (test) then
+                      call conv_one_FFT(dyn, arrays%earx, Gamma0, Hx,          &
+                          reline_w0,imline_w0, arrays%ReW0(:, :, j),           &
+                          arrays%ImW0(:, :, j),config%DC, model_args%nlp)
+                      if (config%DC .eq. 0 .and. config%refvar .eq. 1) then
+                         call conv_one_FFT(dyn, arrays%earx, Gamma0, Hx,       &
+                             reline_w1, imline_w1, arrays%ReW1(:, :, j),       &
+                             arrays%ImW1(:, :, j), config%DC,                  &
+                             model_args%nlp)
+                         call conv_one_FFT(dyn, arrays%earx, Gamma0,           &
+                             Hx_delta,reline_w2, imline_w2,arrays%ReW2(:,:,    &
+                             j),arrays%ImW2(:, :, j),config%DC,                &
+                             model_args%nlp)
+                      end if
+                      if (config%DC .eq. 0 .and. config%ionvar .eq. 1) then
+                         call conv_one_FFT(dyn, arrays%earx, Gamma0,           &
+                             Hx_dlogxi,reline_w3, imline_w3,arrays%ReW3(:,:,   &
+                             j),arrays%ImW3(:, :, j),config%DC,                &
+                             model_args%nlp)
+                      end if
+                   else
+                      call conv_one_FFTw(dyn, arrays%earx, Gamma0, Hx,         &
+                          reline_w0,imline_w0, arrays%ReW0(:, :, j),           &
+                          arrays%ImW0(:, :, j),config%DC, model_args%nlp)
+                      if (config%DC .eq. 0 .and. config%refvar .eq. 1) then
+                         call conv_one_FFTw(dyn, arrays%earx, Gamma0, Hx,      &
+                             reline_w1, imline_w1, arrays%ReW1(:, :, j),       &
+                             arrays%ImW1(:, :, j), config%DC,                  &
+                             model_args%nlp)
+                         call conv_one_FFTw(dyn, arrays%earx, Gamma0,          &
+                             Hx_delta,reline_w2, imline_w2,arrays%ReW2(:,:,    &
+                             j),arrays%ImW2(:, :, j),config%DC,                &
+                             model_args%nlp)
+                      end if
+                      if (config%DC .eq. 0 .and. config%ionvar .eq. 1) then
+                         call conv_one_FFTw(dyn, arrays%earx, Gamma0,          &
+                             Hx_dlogxi,reline_w3, imline_w3,arrays%ReW3(:,:,   &
+                             j),arrays%ImW3(:, :, j),config%DC,                &
+                             model_args%nlp)
+                      end if
+                   endif
+                end do
             end do
         end do
-    end do
-end subroutine do_convolutions
+    end subroutine do_convolutions
+end module m_genreltrans
 
 ! -----------------------------------------------------------------------
 subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
@@ -307,7 +356,7 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
     muobs = cos(model_args%inc * pi / 180.d0)
 
     ! Decide if this is the DC component/time averaged spectrum or not
-    if(config%flo .lt. tiny(config%flo) .or. config%fhi .lt. tiny(config%fhi))then
+    if (config%flo .lt. tiny(config%flo) .or. config%fhi .lt. tiny(config%fhi))then
         config%DC = 1
         model_args%g = 0.0
         model_args%DelAB = 0.0
@@ -328,13 +377,13 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
         needconv)
 
     if (config%verbose .gt. 2) call CPU_TIME (time_start)
-    if(needtrans)then
+    if (needtrans)then
        ! allocate lensing/reflection fraction arrays if necessary
-       if(allocated(lens)) deallocate(lens)
+       if (allocated(lens)) deallocate(lens)
        allocate (lens(nlp))
-       if(allocated(frobs)) deallocate(frobs)
+       if (allocated(frobs)) deallocate(frobs)
        allocate (frobs(nlp))
-       if(allocated(frrel)) deallocate(frrel)
+       if (allocated(frrel)) deallocate(frrel)
        allocate (frrel(nlp))
        ! Calculate the Kernel for the given parameters
        status_re_tau = .true.
@@ -347,7 +396,7 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
            arrays%ker_W2, arrays%ker_W3, frobs, frrel)
        ! print *, 'gso ', gso(1)
     end if
-    if(config%verbose .gt. 2) then
+    if (config%verbose .gt. 2) then
        call CPU_TIME (time_end)
        print *, 'Transfer function runtime: ', time_end - time_start, ' seconds'
     end if
@@ -359,7 +408,7 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
     ! the ionization parameter is DISTANCE (rtdist).
     ! We need to call the continuum BEFORE the radial profiles in the rest of
     ! the flavuors
-    if(dset .eq. 0 .or. size(model_args%h) .eq. 2) then
+    if (dset .eq. 0 .or. size(model_args%h) .eq. 2) then
        ! set up the continuum spectrum plus relative quantities (cutoff
        ! energies, lensing/gfactors, luminosity, etc)
        call init_cont(nlp, model_args%a, model_args%h, model_args%zcos,        &
@@ -396,14 +445,14 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
      end if
 
     ! do this for each lamp post, then find some sort of weird average?
-    if(config%verbose .gt. 0) write(*,*)"Observer's reflection fraction for each source:",model_args%boost*frobs
-    if(config%verbose .gt. 0) write(*,*)"Relxill reflection fraction for each source:", frrel
+    if (config%verbose .gt. 0) write(*,*)"Observer's reflection fraction for each source:",model_args%boost*frobs
+    if (config%verbose .gt. 0) write(*,*)"Relxill reflection fraction for each source:", frrel
 
-    if(config%verbose .gt. 2) call CPU_TIME (time_start)
-    if(needconv)then
+    if (config%verbose .gt. 2) call CPU_TIME (time_start)
+    if (needconv)then
         call do_convolutions(config, model_args, arrays)
     end if
-    if(config%verbose .gt. 2) then
+    if (config%verbose .gt. 2) then
         call CPU_TIME (time_end)
         print *, 'Convolutions runtime: ', time_end - time_start, ' seconds'
     endif
@@ -413,9 +462,9 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
 
     ! TBD coherence check - if zero coherence between lamp posts, call a
     ! different subroutine
-    if(model_args%ReIm .eq. 7) then
+    if (model_args%ReIm .eq. 7) then
         ! tbd - implement zero cohernece in lag_freq
-        if(nlp .gt. 1 .and. model_args%beta_p .eq. 0.) then
+        if (nlp .gt. 1 .and. model_args%beta_p .eq. 0.) then
             call lag_freq_nocoh(nex, arrays%earx, config%nf, arrays%fix,       &
                 real(config%flo), real(config%fhi), config%Emin,config%Emax,   &
                 nlp, arrays%contx, absorbx, real(tauso),real(gso),             &
@@ -466,7 +515,7 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
         end do
     end if
 
-    if(config%DC .eq. 1)then
+    if (config%DC .eq. 1)then
         ! Norm is applied internally for DC/time averaged spectrum component of
         ! dset=1
         ! No need for the immaginary part in DC
@@ -483,7 +532,7 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
         ! parameters
         ! note: this must be done by rawG for two incoherent lamp posts, hence
         ! the skip below
-        if(nlp .eq. 1 .or. model_args%beta_p .ne. 0.) then
+        if (nlp .eq. 1 .or. model_args%beta_p .ne. 0.) then
             if (model_args%ReIm .gt. 0.0) then
                 call propercross(nex, config%nf, arrays%earx,arrays%ReSrawa,   &
                     arrays%ImSrawa, arrays%ReGrawa,arrays%ImGrawa,             &
@@ -522,12 +571,12 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
     end if
 
     ! Write output depending on ReIm parameter
-    if(model_args%ReIm .eq. 7) then
+    if (model_args%ReIm .eq. 7) then
         do i=1,ne
             dE = ear(i) - ear(i-1)
             photar(i) = atan2(ImS(i),ReS(i))/(pi*(ear(i) + ear(i-1)))*dE
         end do
-    else if(abs(model_args%ReIm) .le. 4)then
+    else if (abs(model_args%ReIm) .le. 4)then
         call crebin(nex, arrays%earx, arrays%ReGbar, arrays%ImGbar, ne,ear,    &
             ReS, ImS) !S is in photar form
         ! do i = 1, ne
@@ -535,14 +584,14 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
         ! ((ear(i) + ear(i-1))*0.5)**2
         ! enddo
 
-        if(abs(model_args%ReIm) .eq. 1)then !Real part
+        if (abs(model_args%ReIm) .eq. 1)then !Real part
             photar = ReS
-        else if(abs(model_args%ReIm) .eq. 2)then !Imaginary part
+        else if (abs(model_args%ReIm) .eq. 2)then !Imaginary part
             photar = ImS
-        else if(abs(model_args%ReIm) .eq. 3)then !Modulus
+        else if (abs(model_args%ReIm) .eq. 3)then !Modulus
             photar = sqrt(ReS**2 + ImS**2)
             write(*,*) "Warning ReIm=3 should not be used for fitting!"
-        else if(abs(model_args%ReIm) .eq. 4)then !Time lag (s)
+        else if (abs(model_args%ReIm) .eq. 4)then !Time lag (s)
             do i = 1,ne
                 dE = ear(i) - ear(i-1)
                 photar(i) = atan2(ImS(i) , ReS(i)) / (2.0*pi*config%fc) * dE
@@ -552,12 +601,12 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
     else
         call cfoldandbin(nex, arrays%earx, arrays%ReGbar, arrays%ImGbar,ne,    &
             ear, ReS, ImS, model_args%resp_matr) !S is count rate
-        if(abs(model_args%ReIm) .eq. 5)then !Modulus
+        if (abs(model_args%ReIm) .eq. 5)then !Modulus
             do i = 1, ne
                 dE = ear(i) - ear(i-1)
                 photar(i) = sqrt(ReS(i)**2 + ImS(i)**2)
             end do
-        else if(abs(model_args%ReIm) .eq. 6)then !Time lag (s)
+        else if (abs(model_args%ReIm) .eq. 6)then !Time lag (s)
             do i = 1, ne
                 dE = ear(i) - ear(i-1)
                 photar(i) = atan2(ImS(i) , ReS(i)) / (2.0*pi*config%fc) * dE
@@ -566,7 +615,7 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
     end if
 
     if (config%verbose .gt. 1 .and. abs(model_args%ReIm) .gt. 0 .and. model_args%ReIm .lt. 7) then
-        if(config%DC .eq. 0 .and. model_args%beta_p .eq. 0) then
+        if (config%DC .eq. 0 .and. model_args%beta_p .eq. 0) then
            call write_components(ne, ear, nex, arrays%earx, config%nf,         &
                real(config%flo), real(config%fhi), nlp, arrays%contx,          &
                absorbx,real(tauso), real(gso), arrays%ReW0, arrays%ImW0,       &
@@ -593,7 +642,7 @@ subroutine genreltrans(Cp, dset, nlp, ear, ne, param, ifl, photar)
         open (unit = 24, file = 'Output/Continuum_spec.dat',status='replace', action = 'write')
         do i=1,nex
             dE = arrays%earx(i) - arrays%earx(i-1)
-            if(nlp .eq. 1) then
+            if (nlp .eq. 1) then
                 contx_temp = arrays%contx(i,1)/dE
             else
                 contx_temp = 0.

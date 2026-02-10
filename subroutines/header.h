@@ -32,6 +32,8 @@ include 'subroutines/radial_profiles/sysfref.f90'
 include 'subroutines/radial_profiles/xiraw.f90'
 include 'subroutines/radial_profiles/zA_logne.f90'
 
+include 'subroutines/common.f90'
+
 include 'subroutines/angles.f90'
 include 'subroutines/ave_weight2D.f90'
 include 'subroutines/bkgroutines.f90'

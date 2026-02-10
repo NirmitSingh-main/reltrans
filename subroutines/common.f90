@@ -1,4 +1,4 @@
-module m_genreltrans_types
+module common_types
     implicit none
 
     ! this should be moved so that all of the wrappers pass the following
@@ -134,23 +134,23 @@ contains
 
         ! TODO: should this be printing if it modifies the input parameters?
         ! some kind of warning perhaps?
-        if(abs(model_args%a) .gt. 0.999) then
+        if (abs(model_args%a) .gt. 0.999) then
             model_args%a = sign(model_args%a,1.d0) * 0.999
         end if
         config%rmin = disco(model_args%a)
         config%rh = 1.d0+sqrt(1.d0-model_args%a**2)
-        if(model_args%rin .lt. 0.d0) then
+        if (model_args%rin .lt. 0.d0) then
             model_args%rin = abs(model_args%rin) * config%rmin
         end if
-        if(model_args%rin .lt. config%rmin)then
+        if (model_args%rin .lt. config%rmin)then
             write(*,*)"Warning! rin<ISCO! Set to ISCO"
             model_args%rin = config%rmin
         end if
         do i=1,model_args%nlp
-            if(model_args%h(i) .lt. 0.d0) then
+            if (model_args%h(i) .lt. 0.d0) then
                 model_args%h(i) = abs(model_args%h(i)) * config%rh
             end if
-            if(model_args%h(i) .lt. 1.5d0*config%rh)then
+            if (model_args%h(i) .lt. 1.5d0*config%rh)then
                 write(*,*)"Warning! h<1.5*rh! Set to 1.5*rh"
                 model_args%h(i) = 1.5d0 * config%rh
             end if
@@ -189,11 +189,6 @@ contains
         write(pathname_xillver, '(A, A, A)') trim(path_tables), '/', trim(xillver)
         write(pathname_xillverDCp, '(A, A, A)') trim(path_tables), '/', trim(xillverDCp)
     end subroutine read_environment_variables
-
-    subroutine initialise_all(config)
-        use conv_mod, only: nex
-        type(t_config), intent(inout) :: config
-    end subroutine initialise_all
 
     ! Initialise all of the configuration fields that can be derived after
     ! `read_environment_variables` has been called, and allocate the arrays
@@ -259,101 +254,53 @@ contains
             if (allocated(arrays%ker_W3)) deallocate(arrays%ker_W3)
             allocate(arrays%ker_W3(model_args%nlp,nex,config%nf,config%me,config%xe))
 
-            if(allocated(arrays%ReW0)) deallocate(arrays%ReW0)
+            if (allocated(arrays%ReW0)) deallocate(arrays%ReW0)
             allocate(arrays%ReW0(model_args%nlp,nex,config%nf))
 
-            if(allocated(arrays%ImW0)) deallocate(arrays%ImW0)
+            if (allocated(arrays%ImW0)) deallocate(arrays%ImW0)
             allocate(arrays%ImW0(model_args%nlp,nex,config%nf))
 
-            if(allocated(arrays%ReW1)) deallocate(arrays%ReW1)
+            if (allocated(arrays%ReW1)) deallocate(arrays%ReW1)
             allocate(arrays%ReW1(model_args%nlp,nex,config%nf))
 
-            if(allocated(arrays%ImW1)) deallocate(arrays%ImW1)
+            if (allocated(arrays%ImW1)) deallocate(arrays%ImW1)
             allocate(arrays%ImW1(model_args%nlp,nex,config%nf))
 
-            if(allocated(arrays%ReW2)) deallocate(arrays%ReW2)
+            if (allocated(arrays%ReW2)) deallocate(arrays%ReW2)
             allocate(arrays%ReW2(model_args%nlp,nex,config%nf))
 
-            if(allocated(arrays%ImW2)) deallocate(arrays%ImW2)
+            if (allocated(arrays%ImW2)) deallocate(arrays%ImW2)
             allocate(arrays%ImW2(model_args%nlp,nex,config%nf))
 
-            if(allocated(arrays%ReW3)) deallocate(arrays%ReW3)
+            if (allocated(arrays%ReW3)) deallocate(arrays%ReW3)
             allocate(arrays%ReW3(model_args%nlp,nex,config%nf))
 
-            if(allocated(arrays%ImW3)) deallocate(arrays%ImW3)
+            if (allocated(arrays%ImW3)) deallocate(arrays%ImW3)
             allocate(arrays%ImW3(model_args%nlp,nex,config%nf))
 
-            if(allocated(arrays%ReSraw)) deallocate(arrays%ReSraw)
+            if (allocated(arrays%ReSraw)) deallocate(arrays%ReSraw)
             allocate(arrays%ReSraw(nex,config%nf))
 
-            if(allocated(arrays%ImSraw)) deallocate(arrays%ImSraw)
+            if (allocated(arrays%ImSraw)) deallocate(arrays%ImSraw)
             allocate(arrays%ImSraw(nex,config%nf))
 
-            if(allocated(arrays%ReSrawa)) deallocate(arrays%ReSrawa)
+            if (allocated(arrays%ReSrawa)) deallocate(arrays%ReSrawa)
             allocate(arrays%ReSrawa(nex,config%nf))
 
-            if(allocated(arrays%ImSrawa)) deallocate(arrays%ImSrawa)
+            if (allocated(arrays%ImSrawa)) deallocate(arrays%ImSrawa)
             allocate(arrays%ImSrawa(nex,config%nf))
 
-            if(allocated(arrays%ReGrawa)) deallocate(arrays%ReGrawa)
+            if (allocated(arrays%ReGrawa)) deallocate(arrays%ReGrawa)
             allocate(arrays%ReGrawa(nex,config%nf))
 
-            if(allocated(arrays%ImGrawa)) deallocate(arrays%ImGrawa)
+            if (allocated(arrays%ImGrawa)) deallocate(arrays%ImGrawa)
             allocate(arrays%ImGrawa(nex,config%nf))
 
-            if(allocated(arrays%ReG)) deallocate(arrays%ReG)
+            if (allocated(arrays%ReG)) deallocate(arrays%ReG)
             allocate(arrays%ReG(nex,config%nf))
 
-            if(allocated(arrays%ImG)) deallocate(arrays%ImG)
+            if (allocated(arrays%ImG)) deallocate(arrays%ImG)
             allocate(arrays%ImG(nex,config%nf))
         end if
     end subroutine
-
-end module m_genreltrans_types
-
-module m_genreltrans
-    use m_genreltrans_types
-    implicit none
-
-contains
-
-    ! Allocate the global arrays that reltrans needs
-    subroutine setup_global_arrays(config, nlp)
-        use dyn_gr, only: ndelta, cosd, dcosdr, rlp, tlp, npts, re1, pem1, taudo1
-        use gr_continuum, only: tauso, gso, cosdelta_obs
-        use radial_grids, only: logxir, gsdr, dfer_arr, logner
-        integer, intent(in) :: nlp
-        type(t_config), intent(in) :: config
-        ! allocate arrays for radial profiles
-        allocate(dfer_arr(config%xe))
-        allocate(logxir(config%xe))
-        allocate(gsdr(config%xe))
-        allocate(logner(config%xe))
-
-        ! allocate GR arrays
-        allocate (cosd(ndelta,nlp))
-        allocate (dcosdr(ndelta,nlp))
-        allocate (rlp(ndelta,nlp))
-        allocate (tlp(ndelta,nlp))
-        allocate (npts(nlp))
-        allocate (gso(nlp))
-        allocate (tauso(nlp))
-        allocate (cosdelta_obs(nlp))
-
-        allocate(re1(config%nphi,config%nro))
-        allocate(taudo1(config%nphi,config%nro))
-        allocate(pem1(config%nphi,config%nro))
-    end subroutine setup_global_arrays
-
-    subroutine print_header()
-        write(*,*)"----------------------------------------------------"
-        write(*,*)"This is RELTRANS v1.0.0: a transfer function model for"
-        write(*,*)"X-ray reverberation mapping."
-        write(*,*)"Please cite Ingram et al (2019) MNRAS 488 p324-347, "
-        write(*,*)"Mastroserio et al (2021) MNRAS 507 p55-73, and "
-        write(*,*)"Lucchini et al (2023) arXiv 230505039L."
-        write(*,*)"----------------------------------------------------"
-    end subroutine print_header
-end module m_genreltrans
-
-
+end module common_types
