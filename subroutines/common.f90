@@ -12,7 +12,7 @@ module m_genreltrans_types
         double precision :: a, inc, rin, rout, zcos, Gamma, honr
         real :: logxi, Afe, lognep, Cutoff_obs, Cutoff_s, Dkpc, Anorm, beta_p
         real :: Nh, boost, Mass, floHz, fhiHz, DelA
-        integer :: nlp, ReIm, resp_matr
+        integer :: nlp, ReIm, resp_matr, Cp
         double precision :: qboost, b1, b2, eta, eta_0
     end type t_model_arguments
 
@@ -33,6 +33,8 @@ module m_genreltrans_types
         ! dlogf: a resolution parameter in base 10
         double precision :: rnmax = 300.d0, dlogf = 0.09
 
+        real :: DeltaGamma = 0.01
+
         ! internal frequency grid
         ! number of frequency bins
         integer :: nf
@@ -44,7 +46,7 @@ module m_genreltrans_types
 
         ! relativistic parameters and limit on rin and h
         double precision :: rmin, rh
-        double precision, allocatable :: height(:), contx_int(:)
+        double precision, allocatable :: height(:)
 
         ! internal energy grid (nex) and output/xspec (ne) energy grid
         ! dloge: logarithmic resolution of the internal energy grid
@@ -55,13 +57,15 @@ module m_genreltrans_types
 
         ! variable for non linear effects
         integer :: DC, ionvariation
-        real :: dlogxi1, dlogxi2, Gamma1, Gamma2, DeltaGamma
+        real :: dlogxi1, dlogxi2
     end type t_config
 
     type :: t_arrays
         ! earx: internal energy grid array (0:nex)
         real, allocatable :: earx(:), ear(:), fix(:)
         real, allocatable :: ReGbar(:), ImGbar(:)
+        real, allocatable :: contx(:,:)
+        double precision, allocatable :: contx_int(:)
         ! lens needs to be allocatable to save it.
         double precision, allocatable :: frobs(:), frrel(:)
         ! TRANSFER FUNCTIONS and Cross spectrum dynamic allocation + variables
@@ -73,8 +77,8 @@ module m_genreltrans_types
 contains
 
     ! Unwraps the arguments from a parameter array into `args`.
-    subroutine unwrap_arguments(args, nlp, dset, params)
-        integer, intent(in) :: nlp, dset
+    subroutine unwrap_arguments(args, nlp, dset, params, cutoff_powerlaw)
+        integer, intent(in) :: nlp, dset, cutoff_powerlaw
         real, target, intent(in) :: params(32)
         type(t_model_arguments), intent(out) :: args
         integer :: i
@@ -115,6 +119,7 @@ contains
         args%DelA = params(26)
         args%Anorm = params(31)
         args%resp_matr = params(32)
+        args%Cp = cutoff_powerlaw
     end subroutine unwrap_arguments
 
     ! Adjust the model parameters to sane values and set the derived values in
@@ -193,15 +198,19 @@ contains
     ! Initialise all of the configuration fields that can be derived after
     ! `read_environment_variables` has been called, and allocate the arrays
     ! in `arrs`
-    subroutine setup_arrays(config, arrays)
+    subroutine setup_arrays(config, arrays, nlp)
         use conv_mod, only: nex
         type(t_config), intent(inout) :: config
         type(t_arrays), intent(inout) :: arrays
+        integer, intent(in) :: nlp
         integer :: i
 
         allocate(arrays%earx(0:nex))
         allocate(arrays%ReGbar(nex))
         allocate(arrays%ImGbar(nex))
+
+        allocate(arrays%contx(nex,nlp))
+        allocate(arrays%contx_int(nlp))
 
         config%dloge = log10(config%Emax / config%Emin) / float(nex)
 
