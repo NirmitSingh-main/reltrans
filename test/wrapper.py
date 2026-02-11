@@ -3,6 +3,7 @@ import platform
 import dataclasses
 import ctypes as ct
 import pathlib
+import warnings
 
 import numpy as np
 
@@ -23,6 +24,7 @@ def get_reltrans_library_path(lib_name="libreltrans") -> str:
     """
     lib_path = os.environ.get("RELTRANS_PATH", None)
     if lib_path:
+        warnings.warn(f"Using RELTRANS_PATH variable: {lib_path}")
         return lib_path
 
     build_dir = pathlib.Path(pathlib.Path(__file__).parent.parent) / "build" / "lib"
